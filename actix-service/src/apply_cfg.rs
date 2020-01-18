@@ -7,18 +7,7 @@ use crate::cell::Cell;
 use crate::{Service, ServiceFactory};
 
 /// Convert `Fn(Config, &mut Service1) -> Future<Service2>` fn to a service factory
-pub fn apply_cfg<F, C, T, R, S, E>(
-    srv: T,
-    f: F,
-) -> impl ServiceFactory<
-    Config = C,
-    Request = S::Request,
-    Response = S::Response,
-    Error = S::Error,
-    Service = S,
-    InitError = E,
-    Future = R,
-> + Clone
+pub fn apply_cfg<F, C, T, R, S, E>(srv: T, f: F) -> ApplyConfigService<F, C, T, R, S, E>
 where
     F: FnMut(C, &mut T) -> R,
     T: Service,
@@ -37,14 +26,7 @@ where
 pub fn apply_cfg_factory<F, C, T, R, S>(
     factory: T,
     f: F,
-) -> impl ServiceFactory<
-    Config = C,
-    Request = S::Request,
-    Response = S::Response,
-    Error = S::Error,
-    Service = S,
-    InitError = T::InitError,
-> + Clone
+) -> ApplyConfigServiceFactory<F, C, T, R, S>
 where
     F: FnMut(C, &mut T::Service) -> R,
     T: ServiceFactory<Config = ()>,
@@ -59,7 +41,7 @@ where
 }
 
 /// Convert `Fn(Config, &mut Server) -> Future<Service>` fn to NewService\
-struct ApplyConfigService<F, C, T, R, S, E>
+pub struct ApplyConfigService<F, C, T, R, S, E>
 where
     F: FnMut(C, &mut T) -> R,
     T: Service,
@@ -110,7 +92,7 @@ where
 }
 
 /// Convert `Fn(&Config) -> Future<Service>` fn to NewService
-struct ApplyConfigServiceFactory<F, C, T, R, S>
+pub struct ApplyConfigServiceFactory<F, C, T, R, S>
 where
     F: FnMut(C, &mut T::Service) -> R,
     T: ServiceFactory<Config = ()>,
@@ -163,7 +145,7 @@ where
 }
 
 #[pin_project::pin_project]
-struct ApplyConfigServiceFactoryResponse<F, C, T, R, S>
+pub struct ApplyConfigServiceFactoryResponse<F, C, T, R, S>
 where
     F: FnMut(C, &mut T::Service) -> R,
     T: ServiceFactory<Config = ()>,

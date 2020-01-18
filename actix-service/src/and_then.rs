@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use super::{Service, ServiceFactory};
@@ -10,7 +9,7 @@ use crate::cell::Cell;
 /// of another service which completes successfully.
 ///
 /// This is created by the `ServiceExt::and_then` method.
-pub(crate) struct AndThenService<A, B>(Cell<(A, B)>);
+pub struct AndThenService<A, B>(Cell<A>, Cell<B>);
 
 impl<A, B> AndThenService<A, B> {
     /// Create new `AndThen` combinator
@@ -19,13 +18,13 @@ impl<A, B> AndThenService<A, B> {
         A: Service,
         B: Service<Request = A::Response, Error = A::Error>,
     {
-        Self(Cell::new((a, b)))
+        Self(Cell::new(a), Cell::new(b))
     }
 }
 
 impl<A, B> Clone for AndThenService<A, B> {
     fn clone(&self) -> Self {
-        AndThenService(self.0.clone())
+        AndThenService(self.0.clone(), self.1.clone())
     }
 }
 
@@ -40,9 +39,8 @@ where
     type Future = AndThenServiceResponse<A, B>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let srv = self.0.get_mut();
-        let not_ready = !srv.0.poll_ready(cx)?.is_ready();
-        if !srv.1.poll_ready(cx)?.is_ready() || not_ready {
+        let not_ready = { !self.0.get_mut().poll_ready(cx)?.is_ready() };
+        if !self.1.poll_ready(cx)?.is_ready() || not_ready {
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
@@ -51,13 +49,13 @@ where
 
     fn call(&mut self, req: A::Request) -> Self::Future {
         AndThenServiceResponse {
-            state: State::A(self.0.get_mut().0.call(req), Some(self.0.clone())),
+            state: State::A(self.0.get_mut().call(req), Some(self.1.clone())),
         }
     }
 }
 
 #[pin_project::pin_project]
-pub(crate) struct AndThenServiceResponse<A, B>
+pub struct AndThenServiceResponse<A, B>
 where
     A: Service,
     B: Service<Request = A::Response, Error = A::Error>,
@@ -72,7 +70,7 @@ where
     A: Service,
     B: Service<Request = A::Response, Error = A::Error>,
 {
-    A(#[pin] A::Future, Option<Cell<(A, B)>>),
+    A(#[pin] A::Future, Option<Cell<B>>),
     B(#[pin] B::Future),
     Empty,
 }
@@ -94,7 +92,7 @@ where
                 Poll::Ready(res) => {
                     let mut b = b.take().unwrap();
                     this.state.set(State::Empty); // drop fut A
-                    let fut = b.get_mut().1.call(res);
+                    let fut = b.get_mut().call(res);
                     this.state.set(State::B(fut));
                     self.poll(cx)
                 }
@@ -110,7 +108,7 @@ where
 }
 
 /// `.and_then()` service factory combinator
-pub(crate) struct AndThenServiceFactory<A, B>
+pub struct AndThenServiceFactory<A, B>
 where
     A: ServiceFactory,
     A::Config: Clone,
@@ -121,7 +119,8 @@ where
         InitError = A::InitError,
     >,
 {
-    inner: Rc<(A, B)>,
+    a: A,
+    b: B,
 }
 
 impl<A, B> AndThenServiceFactory<A, B>
@@ -137,9 +136,7 @@ where
 {
     /// Create new `AndThenFactory` combinator
     pub(crate) fn new(a: A, b: B) -> Self {
-        Self {
-            inner: Rc::new((a, b)),
-        }
+        Self { a, b }
     }
 }
 
@@ -164,34 +161,34 @@ where
     type Future = AndThenServiceFactoryResponse<A, B>;
 
     fn new_service(&self, cfg: A::Config) -> Self::Future {
-        let inner = &*self.inner;
         AndThenServiceFactoryResponse::new(
-            inner.0.new_service(cfg.clone()),
-            inner.1.new_service(cfg),
+            self.a.new_service(cfg.clone()),
+            self.b.new_service(cfg),
         )
     }
 }
 
 impl<A, B> Clone for AndThenServiceFactory<A, B>
 where
-    A: ServiceFactory,
+    A: ServiceFactory + Clone,
     A::Config: Clone,
     B: ServiceFactory<
-        Config = A::Config,
-        Request = A::Response,
-        Error = A::Error,
-        InitError = A::InitError,
-    >,
+            Config = A::Config,
+            Request = A::Response,
+            Error = A::Error,
+            InitError = A::InitError,
+        > + Clone,
 {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            a: self.a.clone(),
+            b: self.b.clone(),
         }
     }
 }
 
 #[pin_project::pin_project]
-pub(crate) struct AndThenServiceFactoryResponse<A, B>
+pub struct AndThenServiceFactoryResponse<A, B>
 where
     A: ServiceFactory,
     B: ServiceFactory<Request = A::Response>,

@@ -46,12 +46,7 @@ impl<T: Service> Pipeline<T> {
     ///
     /// Note that this function consumes the receiving service and returns a
     /// wrapped version of it.
-    pub fn and_then<F, U>(
-        self,
-        service: F,
-    ) -> Pipeline<
-        impl Service<Request = T::Request, Response = U::Response, Error = T::Error> + Clone,
-    >
+    pub fn and_then<F, U>(self, service: F) -> Pipeline<AndThenService<T, U>>
     where
         Self: Sized,
         F: IntoService<U>,
@@ -70,7 +65,7 @@ impl<T: Service> Pipeline<T> {
         self,
         service: I,
         f: F,
-    ) -> Pipeline<impl Service<Request = T::Request, Response = Res, Error = Err> + Clone>
+    ) -> Pipeline<AndThenApplyFn<T, U, F, Fut, Res, Err>>
     where
         Self: Sized,
         I: IntoService<U>,
@@ -89,12 +84,7 @@ impl<T: Service> Pipeline<T> {
     ///
     /// Note that this function consumes the receiving pipeline and returns a
     /// wrapped version of it.
-    pub fn then<F, U>(
-        self,
-        service: F,
-    ) -> Pipeline<
-        impl Service<Request = T::Request, Response = U::Response, Error = T::Error> + Clone,
-    >
+    pub fn then<F, U>(self, service: F) -> Pipeline<ThenService<T, U>>
     where
         Self: Sized,
         F: IntoService<U>,
@@ -178,23 +168,7 @@ pub struct PipelineFactory<T> {
 
 impl<T: ServiceFactory> PipelineFactory<T> {
     /// Call another service after call to this one has resolved successfully.
-    pub fn and_then<F, U>(
-        self,
-        factory: F,
-    ) -> PipelineFactory<
-        impl ServiceFactory<
-                Request = T::Request,
-                Response = U::Response,
-                Error = T::Error,
-                Config = T::Config,
-                InitError = T::InitError,
-                Service = impl Service<
-                    Request = T::Request,
-                    Response = U::Response,
-                    Error = T::Error,
-                > + Clone,
-            > + Clone,
-    >
+    pub fn and_then<F, U>(self, factory: F) -> PipelineFactory<AndThenServiceFactory<T, U>>
     where
         Self: Sized,
         T::Config: Clone,
@@ -219,16 +193,7 @@ impl<T: ServiceFactory> PipelineFactory<T> {
         self,
         factory: I,
         f: F,
-    ) -> PipelineFactory<
-        impl ServiceFactory<
-                Request = T::Request,
-                Response = Res,
-                Error = Err,
-                Config = T::Config,
-                InitError = T::InitError,
-                Service = impl Service<Request = T::Request, Response = Res, Error = Err> + Clone,
-            > + Clone,
-    >
+    ) -> PipelineFactory<AndThenApplyFnFactory<T, U, F, Fut, Res, Err>>
     where
         Self: Sized,
         T::Config: Clone,
@@ -249,23 +214,7 @@ impl<T: ServiceFactory> PipelineFactory<T> {
     ///
     /// Note that this function consumes the receiving pipeline and returns a
     /// wrapped version of it.
-    pub fn then<F, U>(
-        self,
-        factory: F,
-    ) -> PipelineFactory<
-        impl ServiceFactory<
-                Request = T::Request,
-                Response = U::Response,
-                Error = T::Error,
-                Config = T::Config,
-                InitError = T::InitError,
-                Service = impl Service<
-                    Request = T::Request,
-                    Response = U::Response,
-                    Error = T::Error,
-                > + Clone,
-            > + Clone,
-    >
+    pub fn then<F, U>(self, factory: F) -> PipelineFactory<ThenServiceFactory<T, U>>
     where
         Self: Sized,
         T::Config: Clone,

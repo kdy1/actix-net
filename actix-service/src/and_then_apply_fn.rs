@@ -1,14 +1,13 @@
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use crate::cell::Cell;
 use crate::{Service, ServiceFactory};
 
 /// `Apply` service combinator
-pub(crate) struct AndThenApplyFn<A, B, F, Fut, Res, Err>
+pub struct AndThenApplyFn<A, B, F, Fut, Res, Err>
 where
     A: Service,
     B: Service,
@@ -16,7 +15,8 @@ where
     Fut: Future<Output = Result<Res, Err>>,
     Err: From<A::Error> + From<B::Error>,
 {
-    srv: Cell<(A, B, F)>,
+    a: A,
+    b: Cell<(B, F)>,
     r: PhantomData<(Fut, Res, Err)>,
 }
 
@@ -31,7 +31,8 @@ where
     /// Create new `Apply` combinator
     pub(crate) fn new(a: A, b: B, f: F) -> Self {
         Self {
-            srv: Cell::new((a, b, f)),
+            a,
+            b: Cell::new((b, f)),
             r: PhantomData,
         }
     }
@@ -39,7 +40,7 @@ where
 
 impl<A, B, F, Fut, Res, Err> Clone for AndThenApplyFn<A, B, F, Fut, Res, Err>
 where
-    A: Service,
+    A: Service + Clone,
     B: Service,
     F: FnMut(A::Response, &mut B) -> Fut,
     Fut: Future<Output = Result<Res, Err>>,
@@ -47,7 +48,8 @@ where
 {
     fn clone(&self) -> Self {
         AndThenApplyFn {
-            srv: self.srv.clone(),
+            a: self.a.clone(),
+            b: self.b.clone(),
             r: PhantomData,
         }
     }
@@ -67,9 +69,8 @@ where
     type Future = AndThenApplyFnFuture<A, B, F, Fut, Res, Err>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let inner = self.srv.get_mut();
-        let not_ready = inner.0.poll_ready(cx)?.is_pending();
-        if inner.1.poll_ready(cx)?.is_pending() || not_ready {
+        let not_ready = self.a.poll_ready(cx)?.is_pending();
+        if self.b.get_mut().0.poll_ready(cx)?.is_pending() || not_ready {
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
@@ -77,15 +78,14 @@ where
     }
 
     fn call(&mut self, req: A::Request) -> Self::Future {
-        let fut = self.srv.get_mut().0.call(req);
         AndThenApplyFnFuture {
-            state: State::A(fut, Some(self.srv.clone())),
+            state: State::A(self.a.call(req), Some(self.b.clone())),
         }
     }
 }
 
 #[pin_project::pin_project]
-pub(crate) struct AndThenApplyFnFuture<A, B, F, Fut, Res, Err>
+pub struct AndThenApplyFnFuture<A, B, F, Fut, Res, Err>
 where
     A: Service,
     B: Service,
@@ -108,7 +108,7 @@ where
     Err: From<A::Error>,
     Err: From<B::Error>,
 {
-    A(#[pin] A::Future, Option<Cell<(A, B, F)>>),
+    A(#[pin] A::Future, Option<Cell<(B, F)>>),
     B(#[pin] Fut),
     Empty,
 }
@@ -134,7 +134,7 @@ where
                     let mut b = b.take().unwrap();
                     this.state.set(State::Empty);
                     let b = b.get_mut();
-                    let fut = (&mut b.2)(res, &mut b.1);
+                    let fut = (&mut b.1)(res, &mut b.0);
                     this.state.set(State::B(fut));
                     self.poll(cx)
                 }
@@ -150,8 +150,10 @@ where
 }
 
 /// `AndThenApplyFn` service factory
-pub(crate) struct AndThenApplyFnFactory<A, B, F, Fut, Res, Err> {
-    srv: Rc<(A, B, F)>,
+pub struct AndThenApplyFnFactory<A, B, F, Fut, Res, Err> {
+    a: A,
+    b: B,
+    f: F,
     r: PhantomData<(Fut, Res, Err)>,
 }
 
@@ -166,16 +168,25 @@ where
     /// Create new `ApplyNewService` new service instance
     pub(crate) fn new(a: A, b: B, f: F) -> Self {
         Self {
-            srv: Rc::new((a, b, f)),
+            a: a,
+            b: b,
+            f: f,
             r: PhantomData,
         }
     }
 }
 
-impl<A, B, F, Fut, Res, Err> Clone for AndThenApplyFnFactory<A, B, F, Fut, Res, Err> {
+impl<A, B, F, Fut, Res, Err> Clone for AndThenApplyFnFactory<A, B, F, Fut, Res, Err>
+where
+    A: Clone,
+    B: Clone,
+    F: Clone,
+{
     fn clone(&self) -> Self {
         Self {
-            srv: self.srv.clone(),
+            a: self.a.clone(),
+            b: self.b.clone(),
+            f: self.f.clone(),
             r: PhantomData,
         }
     }
@@ -199,19 +210,18 @@ where
     type Future = AndThenApplyFnFactoryResponse<A, B, F, Fut, Res, Err>;
 
     fn new_service(&self, cfg: A::Config) -> Self::Future {
-        let srv = &*self.srv;
         AndThenApplyFnFactoryResponse {
             a: None,
             b: None,
-            f: srv.2.clone(),
-            fut_a: srv.0.new_service(cfg.clone()),
-            fut_b: srv.1.new_service(cfg),
+            f: self.f.clone(),
+            fut_a: self.a.new_service(cfg.clone()),
+            fut_b: self.b.new_service(cfg),
         }
     }
 }
 
 #[pin_project::pin_project]
-pub(crate) struct AndThenApplyFnFactoryResponse<A, B, F, Fut, Res, Err>
+pub struct AndThenApplyFnFactoryResponse<A, B, F, Fut, Res, Err>
 where
     A: ServiceFactory,
     B: ServiceFactory<Config = A::Config, InitError = A::InitError>,
@@ -257,11 +267,8 @@ where
 
         if this.a.is_some() && this.b.is_some() {
             Poll::Ready(Ok(AndThenApplyFn {
-                srv: Cell::new((
-                    this.a.take().unwrap(),
-                    this.b.take().unwrap(),
-                    this.f.clone(),
-                )),
+                a: this.a.take().unwrap(),
+                b: Cell::new((this.b.take().unwrap(), this.f.clone())),
                 r: PhantomData,
             }))
         } else {
