@@ -1,9 +1,10 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use super::{Service, ServiceFactory};
-use crate::cell::Cell;
 
 /// Service for the `then` combinator, chaining a computation onto the end of
 /// another service.
@@ -11,7 +12,7 @@ use crate::cell::Cell;
 /// This is created by the `ServiceExt::then` method.
 pub struct ThenService<A, B> {
     a: A,
-    b: Cell<B>,
+    b: Rc<RefCell<B>>,
 }
 
 impl<A, B> ThenService<A, B> {
@@ -21,7 +22,7 @@ impl<A, B> ThenService<A, B> {
         A: Service,
         B: Service<Request = Result<A::Response, A::Error>, Error = A::Error>,
     {
-        Self { a, b: Cell::new(b) }
+        Self { a, b: Rc::new(RefCell::new(b)) }
     }
 }
 
@@ -49,7 +50,7 @@ where
 
     fn poll_ready(&mut self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let not_ready = !self.a.poll_ready(ctx)?.is_ready();
-        if !self.b.get_mut().poll_ready(ctx)?.is_ready() || not_ready {
+        if !self.b.borrow_mut().poll_ready(ctx)?.is_ready() || not_ready {
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
@@ -79,7 +80,7 @@ where
     A: Service,
     B: Service<Request = Result<A::Response, A::Error>>,
 {
-    A(#[pin] A::Future, Option<Cell<B>>),
+    A(#[pin] A::Future, Option<Rc<RefCell<B>>>),
     B(#[pin] B::Future),
     Empty,
 }
@@ -99,9 +100,9 @@ where
         match this.state.as_mut().project() {
             State::A(fut, b) => match fut.poll(cx) {
                 Poll::Ready(res) => {
-                    let mut b = b.take().unwrap();
+                    let b = b.take().unwrap();
                     this.state.set(State::Empty); // drop fut A
-                    let fut = b.get_mut().call(res);
+                    let fut = b.borrow_mut().call(res);
                     this.state.set(State::B(fut));
                     self.poll(cx)
                 }

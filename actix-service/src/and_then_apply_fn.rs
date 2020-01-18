@@ -2,8 +2,9 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::rc::Rc;
+use std::cell::RefCell;
 
-use crate::cell::Cell;
 use crate::{Service, ServiceFactory};
 
 /// `Apply` service combinator
@@ -16,7 +17,7 @@ where
     Err: From<A::Error> + From<B::Error>,
 {
     a: A,
-    b: Cell<(B, F)>,
+    b: Rc<RefCell<(B, F)>>,
     r: PhantomData<(Fut, Res, Err)>,
 }
 
@@ -32,7 +33,7 @@ where
     pub(crate) fn new(a: A, b: B, f: F) -> Self {
         Self {
             a,
-            b: Cell::new((b, f)),
+            b: Rc::new(RefCell::new((b, f))),
             r: PhantomData,
         }
     }
@@ -70,7 +71,7 @@ where
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let not_ready = self.a.poll_ready(cx)?.is_pending();
-        if self.b.get_mut().0.poll_ready(cx)?.is_pending() || not_ready {
+        if self.b.borrow_mut().0.poll_ready(cx)?.is_pending() || not_ready {
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
@@ -108,7 +109,7 @@ where
     Err: From<A::Error>,
     Err: From<B::Error>,
 {
-    A(#[pin] A::Future, Option<Cell<(B, F)>>),
+    A(#[pin] A::Future, Option<Rc<RefCell<(B, F)>>>),
     B(#[pin] Fut),
     Empty,
 }
@@ -131,10 +132,10 @@ where
         match this.state.as_mut().project() {
             State::A(fut, b) => match fut.poll(cx)? {
                 Poll::Ready(res) => {
-                    let mut b = b.take().unwrap();
+                    let b = b.take().unwrap();
                     this.state.set(State::Empty);
-                    let b = b.get_mut();
-                    let fut = (&mut b.1)(res, &mut b.0);
+                    let (b, f) = &mut *b.borrow_mut();
+                    let fut = f(res, b);
                     this.state.set(State::B(fut));
                     self.poll(cx)
                 }
@@ -268,7 +269,7 @@ where
         if this.a.is_some() && this.b.is_some() {
             Poll::Ready(Ok(AndThenApplyFn {
                 a: this.a.take().unwrap(),
-                b: Cell::new((this.b.take().unwrap(), this.f.clone())),
+                b: Rc::new(RefCell::new((this.b.take().unwrap(), this.f.clone()))),
                 r: PhantomData,
             }))
         } else {
